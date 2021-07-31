@@ -37,10 +37,18 @@ namespace StaticS3.Controllers
             var route = Request.Path.Value.TrimStart('/');
             var response = new MemoryStream();
             Console.WriteLine(route);
-            await minioClient.GetObjectAsync(bucketName, route, cb =>
+            try
+            {
+                await minioClient.GetObjectAsync(bucketName, route, cb =>
             {
                 cb.CopyTo(response);
             });
+            } catch(Minio.Exceptions.ObjectNotFoundException)
+            {
+                return StatusCode(404);
+            }
+
+
 
             response.Position = 0;
             new FileExtensionContentTypeProvider().TryGetContentType(Path.GetFileName(route), out string contentType);
