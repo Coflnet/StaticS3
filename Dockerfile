@@ -1,12 +1,11 @@
 #See https://aka.ms/containerfastmode to understand how Visual Studio uses this Dockerfile to build your images for faster debugging.
 
 # Container we use for final publish
-FROM mcr.microsoft.com/dotnet/aspnet:5.0-buster-slim AS base
+FROM mcr.microsoft.com/dotnet/aspnet:7.0 AS base
 WORKDIR /app
-EXPOSE 80
 
 # Build container
-FROM mcr.microsoft.com/dotnet/sdk:5.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:7.0 AS build
 
 # Copy the code into the container
 WORKDIR /build
@@ -27,4 +26,11 @@ RUN dotnet publish "StaticS3.csproj" -c Release -o /app/publish
 FROM base AS final
 WORKDIR /app
 COPY --from=publish /app/publish .
+
+COPY --from=build /app .
+ENV ASPNETCORE_URLS=http://+:8000
+
+RUN useradd --uid $(shuf -i 2000-65000 -n 1) app
+USER app
+
 ENTRYPOINT ["dotnet", "StaticS3.dll"]
