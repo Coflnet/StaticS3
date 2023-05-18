@@ -22,10 +22,10 @@ namespace StaticS3.Controllers
         public ApiController(ILogger<ApiController> logger, IConfiguration config)
         {
             _logger = logger;
-           // minioClient = new MinioClient().WithEndpoint(config["S3_HOST"]).WithCredentials(config["ACCESS_KEY"], config["SECRET_KEY"]).Build();
+            // minioClient = new MinioClient().WithEndpoint(config["S3_HOST"]).WithCredentials(config["ACCESS_KEY"], config["SECRET_KEY"]).Build();
 
             AmazonS3Config awsCofig = new AmazonS3Config();
-            awsCofig.ServiceURL = config["S3_HOST"];
+            awsCofig.ServiceURL = "https://" + config["S3_HOST"];
             // use path style access
             awsCofig.ForcePathStyle = true;
 
@@ -45,7 +45,7 @@ namespace StaticS3.Controllers
             var route = Request.Path.Value.TrimStart('/');
             var response = new MemoryStream();
             _logger.LogInformation($"Getting {route} from S3 bucket {bucketName}");
-            if(route == "favicon.ico")
+            if (route == "favicon.ico")
             {
                 return StatusCode(200);
             }
