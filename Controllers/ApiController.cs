@@ -7,7 +7,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
-using Minio;
+using Amazon.S3;
 
 namespace StaticS3.Controllers
 {
@@ -16,14 +16,24 @@ namespace StaticS3.Controllers
     public class ApiController : ControllerBase
     {
         private readonly ILogger<ApiController> _logger;
-        private MinioClient minioClient;
-
         private string bucketName;
+        private AmazonS3Client s3Client;
 
         public ApiController(ILogger<ApiController> logger, IConfiguration config)
         {
             _logger = logger;
-            minioClient = new MinioClient().WithEndpoint(config["S3_HOST"]).WithCredentials(config["ACCESS_KEY"], config["SECRET_KEY"]).Build();
+           // minioClient = new MinioClient().WithEndpoint(config["S3_HOST"]).WithCredentials(config["ACCESS_KEY"], config["SECRET_KEY"]).Build();
+
+            AmazonS3Config awsCofig = new AmazonS3Config();
+            awsCofig.ServiceURL = config["S3_HOST"];
+            // use path style access
+            awsCofig.ForcePathStyle = true;
+
+            s3Client = new AmazonS3Client(
+                    config["ACCESS_KEY"],
+                    config["SECRET_KEY"],
+                    awsCofig
+                    );
             bucketName = config["BUCKET_NAME"];
         }
 
@@ -32,13 +42,16 @@ namespace StaticS3.Controllers
         {
             var route = Request.Path.Value.TrimStart('/');
             var response = new MemoryStream();
-            _logger.LogInformation($"Getting {route}");
+            _logger.LogInformation($"Getting {route} from S3 bucket {bucketName}");
+            if(route == "favicon.ico")
+            {
+                return StatusCode(200);
+            }
             try
             {
-                await minioClient.GetObjectAsync(new GetObjectArgs().WithBucket(bucketName).WithObject(route).WithCallbackStream(cb =>
-                {
-                    cb.CopyTo(response);
-                }));
+                using var data = await s3Client.GetObjectAsync(bucketName, route);
+                _logger.LogInformation($"Got {route} from S3 bucket {bucketName} with {data.ContentLength} bytes");
+                await data.ResponseStream.CopyToAsync(response);
             }
             catch (Minio.Exceptions.ObjectNotFoundException)
             {
