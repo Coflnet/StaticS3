@@ -35,6 +35,8 @@ namespace StaticS3.Controllers
                     awsCofig
                     );
             bucketName = config["BUCKET_NAME"];
+
+            _logger.LogInformation($"Using bucket {bucketName}, s3 host {config["S3_HOST"]}, access key {config["ACCESS_KEY"]}, secret key {config["SECRET_KEY"].Length}");
         }
 
         [HttpGet]
@@ -56,6 +58,11 @@ namespace StaticS3.Controllers
             catch (Minio.Exceptions.ObjectNotFoundException)
             {
                 return StatusCode(404);
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "Error getting object");
+                return StatusCode(500);
             }
 
             response.Position = 0;
