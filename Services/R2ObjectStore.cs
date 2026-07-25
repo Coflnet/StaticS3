@@ -46,7 +46,8 @@ public sealed class R2ObjectStore : IObjectStore
     {
         using var buffer = new MemoryStream();
         await content.CopyToAsync(buffer, cancellationToken);
-        var hash = Convert.ToHexString(SHA256.HashData(buffer.GetBuffer().AsSpan(0, (int)buffer.Length))).ToLowerInvariant();
+        var bytes = buffer.Length;
+        var hash = Convert.ToHexString(SHA256.HashData(buffer.GetBuffer().AsSpan(0, (int)bytes))).ToLowerInvariant();
         var action = UploadAction.Updated;
         try
         {
@@ -59,8 +60,8 @@ public sealed class R2ObjectStore : IObjectStore
                 .FirstOrDefault(candidate => candidate.EndsWith(HashMetadata, StringComparison.OrdinalIgnoreCase));
             if (existingHash != null && string.Equals(metadata.Metadata[existingHash], hash, StringComparison.OrdinalIgnoreCase))
             {
-                logger.LogInformation("Object {Key} is {Action} ({Sha256}, {Bytes} bytes)", key, UploadAction.Unchanged, hash, buffer.Length);
-                return new(key, UploadAction.Unchanged, hash, buffer.Length);
+                logger.LogInformation("Object {Key} is {Action} ({Sha256}, {Bytes} bytes)", key, UploadAction.Unchanged, hash, bytes);
+                return new(key, UploadAction.Unchanged, hash, bytes);
             }
         }
         catch (AmazonS3Exception exception) when (
@@ -82,8 +83,8 @@ public sealed class R2ObjectStore : IObjectStore
         request.Headers.CacheControl = CacheControl;
         request.Metadata[HashMetadata] = hash;
         await client.PutObjectAsync(request, cancellationToken);
-        logger.LogInformation("Object {Key} was {Action} ({Sha256}, {Bytes} bytes)", key, action, hash, buffer.Length);
-        return new(key, action, hash, buffer.Length);
+        logger.LogInformation("Object {Key} was {Action} ({Sha256}, {Bytes} bytes)", key, action, hash, bytes);
+        return new(key, action, hash, bytes);
     }
 }
 

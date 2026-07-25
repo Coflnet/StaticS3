@@ -31,7 +31,11 @@ public class R2ObjectStoreTests
             .ThrowsAsync(new AmazonS3Exception("missing") { StatusCode = HttpStatusCode.NotFound });
         PutObjectRequest? request = null;
         client.Setup(value => value.PutObjectAsync(It.IsAny<PutObjectRequest>(), It.IsAny<CancellationToken>()))
-            .Callback<PutObjectRequest, CancellationToken>((value, _) => request = value)
+            .Callback<PutObjectRequest, CancellationToken>((value, _) =>
+            {
+                request = value;
+                value.InputStream.Dispose();
+            })
             .ReturnsAsync(new PutObjectResponse());
         var store = new R2ObjectStore(client.Object, Options, NullLogger<R2ObjectStore>.Instance);
 
