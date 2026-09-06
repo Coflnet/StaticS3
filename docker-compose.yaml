@@ -26,5 +26,8 @@ services:
       SECRET_KEY: minio123
       S3_HOST: minio:9000
       BUCKET_NAME: static
- 
+      TRANSFER_SIGNING_KEY: dev-only-signing-key-please-change-me-32
+      TRANSFER_ADMIN_TOKEN: dev-only-admin-token
+      TRANSFER_BUCKET_NAME: transfers
+      TRANSFER_PUBLIC_BASE_URL: http://localhost:5000
 

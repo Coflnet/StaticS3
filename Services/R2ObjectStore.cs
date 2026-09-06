@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -22,14 +23,20 @@ public static class UploadAction
 
 public sealed record UploadResult(string Key, string Action, string Sha256, long Bytes);
 
+public sealed record StoredObject(string Key, long Size, DateTimeOffset LastModified);
+
 public interface IObjectStore
 {
     Task<UploadResult> PutAsync(string key, Stream content, string contentType, CancellationToken cancellationToken);
+    Task<UploadResult> PutPrivateAsync(string key, Stream content, string bucketName, IReadOnlyDictionary<string, string> metadata, CancellationToken cancellationToken);
+    Task<IReadOnlyList<StoredObject>> ListAsync(string prefix, string bucketName, CancellationToken cancellationToken);
+    Task<Stream?> GetAsync(string key, string bucketName, CancellationToken cancellationToken);
 }
 
 public sealed class R2ObjectStore : IObjectStore
 {
     public const string CacheControl = "public, max-age=2592000, must-revalidate";
+    public const string PrivateCacheControl = "private, no-store";
     private const string HashMetadata = "sha256";
     private readonly IAmazonS3 client;
     private readonly R2Options options;
@@ -86,6 +93,75 @@ public sealed class R2ObjectStore : IObjectStore
         logger.LogInformation("Object {Key} was {Action} ({Sha256}, {Bytes} bytes)", key, action, hash, bytes);
         return new(key, action, hash, bytes);
     }
+
+    public async Task<UploadResult> PutPrivateAsync(string key, Stream content, string bucketName, IReadOnlyDictionary<string, string> metadata, CancellationToken cancellationToken)
+    {
+        if (!content.CanSeek)
+            throw new ArgumentException("A seekable stream is required.", nameof(content));
+
+        content.Position = 0;
+        var hash = Convert.ToHexString(await SHA256.HashDataAsync(content, cancellationToken)).ToLowerInvariant();
+        var bytes = content.Length;
+        content.Position = 0;
+
+        var request = new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            InputStream = content,
+            ContentType = "application/octet-stream",
+            DisablePayloadSigning = true
+        };
+        request.Headers.CacheControl = PrivateCacheControl;
+        request.Metadata[HashMetadata] = hash;
+        foreach (var pair in metadata)
+            request.Metadata[pair.Key] = pair.Value;
+        await client.PutObjectAsync(request, cancellationToken);
+        logger.LogInformation("Object {Key} was {Action} ({Sha256}, {Bytes} bytes)", key, UploadAction.Created, hash, bytes);
+        return new(key, UploadAction.Created, hash, bytes);
+    }
+
+    public async Task<IReadOnlyList<StoredObject>> ListAsync(string prefix, string bucketName, CancellationToken cancellationToken)
+    {
+        var results = new List<StoredObject>();
+        string? continuationToken = null;
+        ListObjectsV2Response response;
+        do
+        {
+            response = await client.ListObjectsV2Async(new ListObjectsV2Request
+            {
+                BucketName = bucketName,
+                Prefix = prefix,
+                ContinuationToken = continuationToken
+            }, cancellationToken);
+            // An empty listing comes back with S3Objects null rather than an empty list.
+            results.AddRange((response.S3Objects ?? []).Select(item => new StoredObject(
+                item.Key,
+                item.Size ?? 0,
+                item.LastModified.HasValue ? new DateTimeOffset(DateTime.SpecifyKind(item.LastModified.Value, DateTimeKind.Utc)) : DateTimeOffset.MinValue)));
+            continuationToken = response.NextContinuationToken;
+        } while (response.IsTruncated == true);
+        return results;
+    }
+
+    public async Task<Stream?> GetAsync(string key, string bucketName, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var response = await client.GetObjectAsync(new GetObjectRequest
+            {
+                BucketName = bucketName,
+                Key = key
+            }, cancellationToken);
+            return response.ResponseStream;
+        }
+        catch (AmazonS3Exception exception) when (
+            exception.StatusCode == HttpStatusCode.NotFound
+            || string.Equals(exception.ErrorCode, "NoSuchKey", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+    }
 }
 
 public static class UploadMetrics
@@ -99,10 +175,22 @@ public static class UploadMetrics
         "statics3_uploaded_bytes_total",
         "Bytes written to object storage.");
 
+    public static readonly Counter TransferUploads = Prometheus.Metrics.CreateCounter(
+        "statics3_transfer_uploads_total",
+        "Secure file transfer upload attempts by result.",
+        new CounterConfiguration { LabelNames = new[] { "result" } });
+
+    public static readonly Counter TransferLinks = Prometheus.Metrics.CreateCounter(
+        "statics3_transfer_links_total",
+        "Secure file transfer upload links created.");
+
     public static void Initialize()
     {
         foreach (var result in new[] { UploadAction.Created, UploadAction.Updated, UploadAction.Unchanged, UploadAction.Failed })
             Uploads.WithLabels(result).Inc(0);
         UploadedBytes.Inc(0);
+        foreach (var result in new[] { "stored", "rejected", "failed" })
+            TransferUploads.WithLabels(result).Inc(0);
+        TransferLinks.Inc(0);
     }
 }

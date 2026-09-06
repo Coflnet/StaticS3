@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using Amazon.Runtime;
 using Amazon.S3;
 using Coflnet.StaticS3.Services;
@@ -7,6 +9,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.OpenApi;
 using Prometheus;
 
@@ -40,6 +43,11 @@ namespace StaticS3
             services.AddSingleton<IObjectStore, R2ObjectStore>();
             services.AddHealthChecks()
                 .AddCheck<R2HealthCheck>("r2", tags: new[] { "ready" });
+
+            var transferOptions = TransferOptions.FromConfiguration(Configuration, options.BucketName);
+            services.AddSingleton(transferOptions);
+            services.AddSingleton<TransferTicketService>();
+
             services.AddControllers();
             services.AddSwaggerGen(c =>
             {
@@ -48,7 +56,7 @@ namespace StaticS3
         }
 
         // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
-        public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
+        public void Configure(IApplicationBuilder app, IWebHostEnvironment env, ILogger<Startup> logger)
         {
             if (env.IsDevelopment())
             {
@@ -56,6 +64,19 @@ namespace StaticS3
                 app.UseSwagger();
                 app.UseSwaggerUI(c => c.SwaggerEndpoint("/swagger/v1/swagger.json", "StaticS3 v1"));
             }
+
+            var transferOptions = app.ApplicationServices.GetRequiredService<TransferOptions>();
+            if (!transferOptions.Enabled)
+            {
+                var missing = new List<string>();
+                if (string.IsNullOrWhiteSpace(transferOptions.SigningKey)) missing.Add("Transfer:SigningKey");
+                if (string.IsNullOrWhiteSpace(transferOptions.AdminToken)) missing.Add("Transfer:AdminToken");
+                if (string.IsNullOrWhiteSpace(transferOptions.BucketName)) missing.Add("Transfer:BucketName");
+                logger.LogWarning("Secure file transfer feature is disabled, missing configuration: {Missing}", string.Join(", ", missing));
+            }
+
+            app.UseDefaultFiles();
+            app.UseStaticFiles();
 
             app.UseRouting();
 

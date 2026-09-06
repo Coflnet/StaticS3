@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<!--
+    Cluster-internal operator page. The public Ingress for transfer.coflnet.com routes only the
+    /transfer/ prefix, so everything under /transfer-admin/ (this file included) is unreachable
+    from the internet - it is only ever opened through `kubectl port-forward svc/static-s3 8000:8000 -n s3`.
+-->
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title>Transfer key pair</title>
+    <link rel="stylesheet" href="../transfer/style.css">
+</head>
+
+<body>
+    <main data-i18n-title="keys.title">
+        <h1 data-i18n="keys.title">Transfer key pair</h1>
+        <p class="sub" data-i18n="keys.intro"></p>
+
+        <div class="note bad" id="unsupported" data-i18n="keys.unsupported" hidden></div>
+
+        <div class="panel">
+            <button id="generate" data-i18n="keys.generate">Generate a new key pair</button>
+            <span class="status" id="status"></span>
+        </div>
+
+        <section id="result" hidden>
+            <div class="note warn" data-i18n="keys.warning"></div>
+
+            <div class="panel">
+                <label for="public" data-i18n="keys.public.label">Public key</label>
+                <textarea id="public" rows="2" readonly spellcheck="false"></textarea>
+                <div class="row">
+                    <button class="secondary" data-copy="public" data-i18n="keys.public.copy">Copy public key</button>
+                </div>
+            </div>
+
+            <div class="panel">
+                <label for="private" data-i18n="keys.private.label">Private key (JWK)</label>
+                <textarea id="private" rows="7" readonly spellcheck="false"></textarea>
+                <div class="row">
+                    <button id="download" data-i18n="keys.private.download">Download private key</button>
+                    <button class="secondary" data-copy="private" data-i18n="keys.private.copy">Copy private key</button>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2 data-i18n="keys.curl.title">Create the upload link</h2>
+                <textarea id="curl" rows="7" readonly spellcheck="false"></textarea>
+                <div class="row">
+                    <button class="secondary" data-copy="curl" data-i18n="keys.curl.copy">Copy command</button>
+                </div>
+            </div>
+        </section>
+
+        <footer>
+            <span data-i18n="keys.footer"></span> <a href="decrypt.html">decrypt.html</a>
+            <span data-i18n="keys.footer.suffix"></span>
+            <br>
+            <a href="index.html" data-i18n="admin.nav.console">Back to the admin console</a>
+        </footer>
+    </main>
+
+    <script type="module">
+        import { generateKeyPair } from '../transfer/crypto.js';
+        import { applyTranslations, t } from '../transfer/i18n.js';
+
+        applyTranslations();
+
+        const status = document.getElementById('status');
+        const result = document.getElementById('result');
+        const publicField = document.getElementById('public');
+        const privateField = document.getElementById('private');
+        const curlField = document.getElementById('curl');
+
+        if (!crypto.subtle)
+            document.getElementById('unsupported').hidden = false;
+
+        document.getElementById('generate').addEventListener('click', async () => {
+            status.textContent = t('keys.generating');
+            try {
+                const keys = await generateKeyPair();
+                publicField.value = keys.publicKey;
+                privateField.value = JSON.stringify(keys.privateKeyJwk, null, 2);
+                curlField.value = [
+                    '# The admin API is not exposed publicly; reach it through the cluster:',
+                    '#   kubectl port-forward -n s3 svc/static-s3 8000:8000',
+                    'curl -X POST http://localhost:8000/transfer-admin/links \\',
+                    '  -H "X-Admin-Token: $TRANSFER_ADMIN_TOKEN" \\',
+                    '  -H "Content-Type: application/json" \\',
+                    '  -d \'{',
+                    '        "label": "Documents for the audit",',
+                    '        "ttlSeconds": 172800,',
+                    `        "publicKey": "${keys.publicKey}"`,
+                    '      }\''
+                ].join('\n');
+                status.textContent = '';
+                result.hidden = false;
+            } catch (failure) {
+                status.textContent = failure.code ? t(failure.code) : (failure.message || t('keys.failed'));
+                status.style.color = 'var(--bad)';
+            }
+        });
+
+        document.getElementById('download').addEventListener('click', () => {
+            const blob = new Blob([privateField.value], { type: 'application/json' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = `transfer-private-key-${new Date().toISOString().slice(0, 10)}.jwk.json`;
+            link.click();
+            setTimeout(() => URL.revokeObjectURL(link.href), 5000);
+        });
+
+        for (const button of document.querySelectorAll('[data-copy]')) {
+            button.addEventListener('click', async () => {
+                const source = document.getElementById(button.dataset.copy);
+                await navigator.clipboard.writeText(source.value);
+                const original = button.textContent;
+                button.textContent = t('keys.copied');
+                setTimeout(() => { button.textContent = original; }, 1200);
+            });
+        }
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title>Secure file upload</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <main data-i18n-title="upload.title">
+        <h1 data-i18n="upload.title">Secure file upload</h1>
+        <p class="sub" id="subtitle" data-i18n="upload.checking">Checking your upload link...</p>
+
+        <div class="note bad" id="error" hidden></div>
+
+        <section id="app" hidden>
+            <div class="panel">
+                <dl class="facts">
+                    <div>
+                        <dt data-i18n="upload.fact.for">For</dt>
+                        <dd id="label"></dd>
+                    </div>
+                    <div>
+                        <dt data-i18n="upload.fact.expires">Link expires</dt>
+                        <dd id="expires">-</dd>
+                    </div>
+                    <div>
+                        <dt data-i18n="upload.fact.max">Max file size</dt>
+                        <dd id="max">-</dd>
+                    </div>
+                </dl>
+            </div>
+
+            <div class="drop" id="drop" role="button" tabindex="0" aria-controls="picker">
+                <strong data-i18n="upload.drop.title">Choose files or drop them here</strong>
+                <span data-i18n="upload.drop.hint">Every file is encrypted on this device before it is sent.</span>
+            </div>
+            <input type="file" id="picker" multiple>
+
+            <div class="panel" id="files" hidden></div>
+
+            <footer data-i18n="upload.footer"></footer>
+        </section>
+    </main>
+
+    <script type="module">
+        import { encryptFile } from './crypto.js';
+        import { applyTranslations, formatExpiry, formatSize, t } from './i18n.js';
+
+        applyTranslations();
+
+        const token = location.hash.slice(1);
+        const subtitle = document.getElementById('subtitle');
+        const error = document.getElementById('error');
+        const app = document.getElementById('app');
+        const drop = document.getElementById('drop');
+        const picker = document.getElementById('picker');
+        const files = document.getElementById('files');
+
+        let ticket = null;
+
+        const fail = (key) => {
+            subtitle.hidden = true;
+            error.textContent = t(key);
+            error.hidden = false;
+        };
+
+        async function load() {
+            if (!token)
+                return fail('upload.error.noToken');
+            let response;
+            try {
+                response = await fetch('/transfer/link', { headers: { 'X-Upload-Token': token } });
+            } catch {
+                return fail('upload.error.unreachable');
+            }
+            if (response.status === 410)
+                return fail('upload.error.expired');
+            if (!response.ok)
+                return fail('upload.error.invalid');
+
+            ticket = await response.json();
+            document.getElementById('label').textContent = ticket.label || t('upload.defaultLabel');
+            document.getElementById('expires').textContent = formatExpiry(ticket.expiresAt);
+            document.getElementById('max').textContent = formatSize(ticket.maxBytes);
+            subtitle.textContent = t('upload.ready');
+            app.hidden = false;
+        }
+
+        function addRow(file) {
+            const row = document.createElement('div');
+            row.className = 'item';
+            const head = document.createElement('div');
+            head.className = 'item-head';
+            const name = document.createElement('span');
+            name.className = 'item-name';
+            name.textContent = file.name;
+            const size = document.createElement('span');
+            size.className = 'item-size';
+            size.textContent = formatSize(file.size);
+            head.append(name, size);
+            const status = document.createElement('div');
+            status.className = 'status';
+            const track = document.createElement('div');
+            track.className = 'track';
+            const bar = document.createElement('div');
+            bar.className = 'bar';
+            track.append(bar);
+            row.append(head, status, track);
+            files.append(row);
+            files.hidden = false;
+            return { row, status, track, bar };
+        }
+
+        const uploadErrorKey = (status) => {
+            if (status === 413) return 'upload.error.rejectedSize';
+            if (status === 410) return 'upload.error.expiredDuring';
+            if (status === 401) return 'upload.error.noLongerValid';
+            return 'upload.error.serverRejected';
+        };
+
+        async function handle(file) {
+            const view = addRow(file);
+            const setProgress = (done, total) => {
+                view.bar.style.width = `${total ? Math.round((done / total) * 100) : 100}%`;
+            };
+            const reject = (message) => {
+                view.status.textContent = message;
+                view.status.style.color = 'var(--bad)';
+                view.track.hidden = true;
+            };
+            if (file.size > ticket.maxBytes)
+                return reject(t('upload.error.tooLarge', { size: formatSize(ticket.maxBytes) }));
+
+            try {
+                view.status.textContent = t('upload.status.encrypting');
+                // Encryption fills the first half of the bar, the upload the second.
+                const sealed = await encryptFile(file, ticket.publicKey, {
+                    chunkSize: ticket.chunkSize,
+                    onProgress: (done, total) => setProgress(done, total * 2)
+                });
+                if (sealed.size > ticket.maxBytes)
+                    return reject(t('upload.error.tooLargeSealed', { size: formatSize(ticket.maxBytes) }));
+
+                view.status.textContent = t('upload.status.uploading');
+                const receipt = await new Promise((resolve, rejectUpload) => {
+                    const request = new XMLHttpRequest();
+                    request.open('POST', '/transfer/upload');
+                    request.setRequestHeader('X-Upload-Token', token);
+                    request.setRequestHeader('Content-Type', 'application/octet-stream');
+                    request.upload.onprogress = (event) => {
+                        if (event.lengthComputable)
+                            setProgress(event.total + event.loaded, event.total * 2);
+                    };
+                    request.onload = () => request.status === 201
+                        ? resolve(JSON.parse(request.responseText))
+                        : rejectUpload(new Error(t(uploadErrorKey(request.status))));
+                    request.onerror = () => rejectUpload(new Error(t('upload.error.network')));
+                    request.send(sealed);
+                });
+
+                view.bar.style.width = '100%';
+                view.status.textContent = t('upload.status.done');
+                view.status.style.color = 'var(--ok)';
+                const proof = document.createElement('div');
+                proof.className = 'receipt mono';
+                proof.textContent = t('upload.status.receipt', {
+                    hash: receipt.sha256.slice(0, 16),
+                    size: formatSize(receipt.bytes)
+                });
+                view.row.append(proof);
+            } catch (failure) {
+                reject(failure.message || t('upload.error.generic'));
+            }
+        }
+
+        async function queue(list) {
+            for (const file of list)
+                await handle(file);
+        }
+
+        drop.addEventListener('click', () => picker.click());
+        drop.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                picker.click();
+            }
+        });
+        picker.addEventListener('change', () => {
+            queue([...picker.files]);
+            picker.value = '';
+        });
+        drop.addEventListener('dragover', (event) => {
+            event.preventDefault();
+            drop.classList.add('over');
+        });
+        drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+        drop.addEventListener('drop', (event) => {
+            event.preventDefault();
+            drop.classList.remove('over');
+            queue([...event.dataTransfer.files]);
+        });
+
+        load();
+    </script>
+</body>
+
+</html>

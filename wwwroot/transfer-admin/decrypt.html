@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<!--
+    Cluster-internal operator page. The public Ingress for transfer.coflnet.com routes only the
+    /transfer/ prefix, so everything under /transfer-admin/ (this file included) is unreachable
+    from the internet - it is only ever opened through `kubectl port-forward svc/static-s3 8000:8000 -n s3`.
+-->
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title>Decrypt a transfer</title>
+    <link rel="stylesheet" href="../transfer/style.css">
+</head>
+
+<body>
+    <main data-i18n-title="decrypt.title">
+        <h1 data-i18n="decrypt.title">Decrypt a transfer</h1>
+        <p class="sub" data-i18n="decrypt.intro"></p>
+
+        <div class="panel">
+            <label for="key" data-i18n="decrypt.key.label">Private key (JWK)</label>
+            <textarea id="key" rows="7" spellcheck="false"
+                placeholder='{"kty":"EC","crv":"P-256","d":"...","x":"...","y":"..."}'></textarea>
+            <div class="row">
+                <button class="secondary" id="pick-key" data-i18n="decrypt.key.load">Load key from file</button>
+                <span class="status" id="key-status"></span>
+            </div>
+            <input type="file" id="key-file" accept=".json,.jwk,application/json">
+        </div>
+
+        <div class="drop" id="drop" role="button" tabindex="0" aria-controls="picker">
+            <strong data-i18n="decrypt.drop.title">Choose the encrypted file or drop it here</strong>
+            <span data-i18n="decrypt.drop.hint">The downloaded .bin from your transfer bucket.</span>
+        </div>
+        <input type="file" id="picker" multiple>
+
+        <div class="panel" id="files" hidden></div>
+
+        <footer>
+            <span data-i18n="decrypt.footer"></span> <a href="keys.html">keys.html</a>
+            <br>
+            <a href="index.html" data-i18n="admin.nav.console">Back to the admin console</a>
+        </footer>
+    </main>
+
+    <script type="module">
+        import { decryptFile } from '../transfer/crypto.js';
+        import { applyTranslations, formatSize, t } from '../transfer/i18n.js';
+
+        applyTranslations();
+
+        const keyField = document.getElementById('key');
+        const keyStatus = document.getElementById('key-status');
+        const keyFile = document.getElementById('key-file');
+        const drop = document.getElementById('drop');
+        const picker = document.getElementById('picker');
+        const files = document.getElementById('files');
+
+        // The key stays in memory only; persisting it here would put a decryption key in
+        // browser storage on a shared localhost origin.
+        document.getElementById('pick-key').addEventListener('click', () => keyFile.click());
+        keyFile.addEventListener('change', async () => {
+            const file = keyFile.files[0];
+            if (!file) return;
+            keyField.value = await file.text();
+            keyStatus.textContent = t('decrypt.key.loaded', { name: file.name });
+            keyFile.value = '';
+        });
+
+        function addRow(file) {
+            const row = document.createElement('div');
+            row.className = 'item';
+            const head = document.createElement('div');
+            head.className = 'item-head';
+            const name = document.createElement('span');
+            name.className = 'item-name';
+            name.textContent = file.name;
+            const size = document.createElement('span');
+            size.className = 'item-size';
+            size.textContent = formatSize(file.size);
+            head.append(name, size);
+            const status = document.createElement('div');
+            status.className = 'status';
+            const track = document.createElement('div');
+            track.className = 'track';
+            const bar = document.createElement('div');
+            bar.className = 'bar';
+            track.append(bar);
+            row.append(head, status, track);
+            files.append(row);
+            files.hidden = false;
+            return { row, status, track, bar };
+        }
+
+        const failureMessage = (failure) => {
+            if (failure.name === 'OperationError') return t('decrypt.error.wrongKey');
+            if (failure.code) return t(failure.code);
+            return failure.message || t('decrypt.error.generic');
+        };
+
+        async function handle(file) {
+            const view = addRow(file);
+            try {
+                view.status.textContent = t('decrypt.status.working');
+                const opened = await decryptFile(file, keyField.value.trim(), {
+                    onProgress: (done, total) => {
+                        view.bar.style.width = `${total ? Math.round((done / total) * 100) : 100}%`;
+                    }
+                });
+                view.bar.style.width = '100%';
+                view.status.textContent = t('decrypt.status.done', {
+                    name: opened.name,
+                    size: formatSize(opened.size)
+                });
+                view.status.style.color = 'var(--ok)';
+
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(opened.blob);
+                link.download = opened.name;
+                link.textContent = t('decrypt.save', { name: opened.name });
+                link.className = 'receipt';
+                link.style.display = 'block';
+                view.row.append(link);
+                link.click();
+            } catch (failure) {
+                view.status.textContent = failureMessage(failure);
+                view.status.style.color = 'var(--bad)';
+                view.track.hidden = true;
+            }
+        }
+
+        async function queue(list) {
+            if (!keyField.value.trim()) {
+                keyStatus.textContent = t('decrypt.key.required');
+                keyStatus.style.color = 'var(--bad)';
+                return;
+            }
+            keyStatus.style.color = '';
+            for (const file of list)
+                await handle(file);
+        }
+
+        drop.addEventListener('click', () => picker.click());
+        drop.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                picker.click();
+            }
+        });
+        picker.addEventListener('change', () => {
+            queue([...picker.files]);
+            picker.value = '';
+        });
+        drop.addEventListener('dragover', (event) => {
+            event.preventDefault();
+            drop.classList.add('over');
+        });
+        drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+        drop.addEventListener('drop', (event) => {
+            event.preventDefault();
+            drop.classList.remove('over');
+            queue([...event.dataTransfer.files]);
+        });
+    </script>
+</body>
+
+</html>

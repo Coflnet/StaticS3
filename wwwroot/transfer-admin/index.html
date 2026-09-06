@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<!--
+    Cluster-internal admin console. The public Ingress for transfer.coflnet.com routes only the
+    /transfer/ prefix, so everything under /transfer-admin/ (this page included) is unreachable
+    from the internet - it is only ever opened through `kubectl port-forward svc/static-s3 8000:8000 -n s3`
+    and then browsing to http://localhost:8000/transfer-admin/.
+-->
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title data-i18n-title="admin.title">Transfer admin console</title>
+    <link rel="stylesheet" href="../transfer/style.css">
+</head>
+
+<body>
+    <main class="admin">
+        <h1 data-i18n="admin.title">Transfer admin console</h1>
+        <p class="sub" data-i18n="admin.intro">
+            Cluster-internal only - reached through kubectl port-forward, never the public Ingress. Manage upload
+            links, saved keys, and received uploads from here.
+        </p>
+
+        <nav class="top">
+            <a href="keys.html" data-i18n="admin.nav.keys">Key pair generator</a>
+            <a href="decrypt.html" data-i18n="admin.nav.decrypt">Decrypt a transfer</a>
+        </nav>
+
+        <!-- (a) Admin token -->
+        <section class="panel">
+            <h2 data-i18n="admin.token.title">Admin token</h2>
+            <p class="sub" data-i18n="admin.token.description">
+                Sent as X-Admin-Token on every request below. Kept only in this tab (sessionStorage) and forgotten
+                when the tab closes.
+            </p>
+            <div class="field">
+                <label for="admin-token" data-i18n="admin.token.label">X-Admin-Token</label>
+                <input type="password" id="admin-token" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="row">
+                <button class="secondary" id="forget-token" data-i18n="admin.token.forget">Forget token</button>
+            </div>
+            <div class="note bad" id="token-error" hidden></div>
+        </section>
+
+        <!-- (b) Create an upload link -->
+        <section class="panel">
+            <h2 data-i18n="admin.create.title">Create an upload link</h2>
+            <form id="create-form">
+                <div class="field">
+                    <label for="create-label" data-i18n="admin.create.label">Label</label>
+                    <input type="text" id="create-label">
+                </div>
+                <div class="field grid-2">
+                    <div>
+                        <label for="create-ttl" data-i18n="admin.create.ttl">Link validity</label>
+                        <select id="create-ttl">
+                            <option value="3600" data-i18n="admin.create.ttl.1h">1 hour</option>
+                            <option value="86400" data-i18n="admin.create.ttl.24h">24 hours</option>
+                            <option value="172800" selected data-i18n="admin.create.ttl.48h">48 hours</option>
+                            <option value="604800" data-i18n="admin.create.ttl.7d">7 days</option>
+                            <option value="1209600" data-i18n="admin.create.ttl.14d">14 days</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="create-max-bytes" data-i18n="admin.create.maxBytes">Maximum upload size</label>
+                        <select id="create-max-bytes">
+                            <option value="10485760" data-i18n="admin.create.maxBytes.10mb">10 MB</option>
+                            <option value="104857600" selected data-i18n="admin.create.maxBytes.100mb">100 MB
+                            </option>
+                            <option value="268435456" data-i18n="admin.create.maxBytes.256mb">256 MB</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="field">
+                    <label data-i18n="admin.create.keySource">Recipient key</label>
+                    <div class="choice">
+                        <label>
+                            <input type="radio" name="key-source" value="generate" checked>
+                            <span data-i18n="admin.create.keySource.generate">Generate a new key pair in this
+                                browser</span>
+                        </label>
+                        <label>
+                            <input type="radio" name="key-source" value="reuse">
+                            <span data-i18n="admin.create.keySource.reuse">Reuse a saved key</span>
+                        </label>
+                    </div>
+                    <select id="create-saved-key" disabled>
+                        <option value="" data-i18n="admin.create.savedKey.empty">No saved keys yet</option>
+                    </select>
+                </div>
+                <div class="row">
+                    <button type="submit" id="create-submit" data-i18n="admin.create.submit">Create link</button>
+                </div>
+            </form>
+            <div class="note bad" id="create-error" hidden></div>
+
+            <div id="create-result" hidden>
+                <div class="note ok" id="create-saved-notice" hidden data-i18n="admin.create.savedNotice"></div>
+                <dl class="facts">
+                    <div>
+                        <dt data-i18n="admin.create.result.url">Upload link</dt>
+                        <dd class="mono" id="result-url"></dd>
+                    </div>
+                    <div>
+                        <dt data-i18n="admin.create.result.ticket">Ticket id</dt>
+                        <dd class="mono" id="result-id"></dd>
+                    </div>
+                    <div>
+                        <dt data-i18n="upload.fact.expires">Link expires</dt>
+                        <dd id="result-expires"></dd>
+                    </div>
+                    <div>
+                        <dt data-i18n="upload.fact.max">Max file size</dt>
+                        <dd id="result-max"></dd>
+                    </div>
+                </dl>
+                <div class="row">
+                    <button class="secondary" id="copy-link" data-i18n="admin.create.copy">Copy link</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- (c) Saved keys -->
+        <section class="panel">
+            <h2 data-i18n="admin.keys.title">Saved keys (this browser)</h2>
+            <div class="note warn" data-i18n="admin.keys.warning"></div>
+            <div class="note bad" id="storage-unavailable" hidden data-i18n="admin.keys.unavailable"></div>
+            <p class="sub" id="keys-empty" data-i18n="admin.keys.empty">No saved keys yet.</p>
+            <div class="table-scroll">
+                <table id="keys-table" hidden>
+                    <thead>
+                        <tr>
+                            <th data-i18n="admin.keys.column.label">Label</th>
+                            <th data-i18n="admin.keys.column.id">Ticket id</th>
+                            <th data-i18n="admin.keys.column.created">Created</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="keys-body"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- (d) Received uploads -->
+        <section class="panel">
+            <h2 data-i18n="admin.uploads.title">Received uploads</h2>
+            <div class="row">
+                <button id="uploads-refresh" data-i18n="admin.uploads.refresh">Refresh</button>
+                <label for="uploads-filter" data-i18n="admin.uploads.filter.label">Filter by ticket id</label>
+                <input type="text" id="uploads-filter" class="grow">
+                <button class="secondary" id="uploads-filter-apply" data-i18n="admin.uploads.filter.apply">Apply
+                </button>
+            </div>
+            <div class="note bad" id="uploads-error" hidden></div>
+            <p class="sub" id="uploads-empty" data-i18n="admin.uploads.empty" hidden>No uploads found.</p>
+            <div class="table-scroll">
+                <table id="uploads-table" hidden>
+                    <thead>
+                        <tr>
+                            <th data-i18n="admin.uploads.column.ticket">Ticket</th>
+                            <th data-i18n="admin.uploads.column.file">File</th>
+                            <th data-i18n="admin.uploads.column.size">Size</th>
+                            <th data-i18n="admin.uploads.column.modified">Received</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="uploads-body"></tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <script type="module">
+        import { decryptFile, generateKeyPair } from '../transfer/crypto.js';
+        import { applyTranslations, formatExpiry, formatSize, t } from '../transfer/i18n.js';
+
+        applyTranslations();
+
+        // --- Admin token: sessionStorage only, so it dies with the tab rather than lingering
+        // like localStorage would. ---
+        const TOKEN_KEY = 'statics3.transfer.adminToken';
+        const tokenInput = document.getElementById('admin-token');
+        const tokenError = document.getElementById('token-error');
+
+        function getToken() {
+            try {
+                return sessionStorage.getItem(TOKEN_KEY) || '';
+            } catch {
+                return '';
+            }
+        }
+
+        function setToken(value) {
+            try {
+                if (value) sessionStorage.setItem(TOKEN_KEY, value);
+                else sessionStorage.removeItem(TOKEN_KEY);
+            } catch {
+                // Best effort only - adminFetch() still sends whatever is in the field.
+            }
+        }
+
+        tokenInput.value = getToken();
+        tokenInput.addEventListener('input', () => setToken(tokenInput.value));
+        document.getElementById('forget-token').addEventListener('click', () => {
+            tokenInput.value = '';
+            setToken('');
+            tokenError.hidden = true;
+        });
+
+        async function adminFetch(path, options = {}) {
+            const headers = new Headers(options.headers || {});
+            headers.set('X-Admin-Token', tokenInput.value);
+            const response = await fetch(path, { ...options, headers });
+            tokenError.hidden = response.status !== 401;
+            if (response.status === 401)
+                tokenError.textContent = t('admin.token.rejected');
+            return response;
+        }
+
+        // --- Saved keys: localStorage, because it must survive across tabs/reloads. A private
+        // window (or a user who has disabled storage) can throw on read or write, so every
+        // access goes through try/catch and the rest of the console keeps working regardless. ---
+        const KEYS_STORAGE_KEY = 'statics3.transfer.keys';
+        const storageUnavailable = document.getElementById('storage-unavailable');
+        let storageOk = true;
+
+        function loadSavedKeys() {
+            try {
+                const raw = localStorage.getItem(KEYS_STORAGE_KEY);
+                const parsed = raw ? JSON.parse(raw) : [];
+                return Array.isArray(parsed) ? parsed : [];
+            } catch {
+                storageOk = false;
+                return [];
+            }
+        }
+
+        function persistSavedKeys(keys) {
+            try {
+                localStorage.setItem(KEYS_STORAGE_KEY, JSON.stringify(keys));
+            } catch {
+                storageOk = false;
+            }
+            storageUnavailable.hidden = storageOk;
+        }
+
+        let savedKeys = loadSavedKeys();
+        storageUnavailable.hidden = storageOk;
+
+        function findSavedKey(ticketId) {
+            return savedKeys.find((entry) => entry.id === ticketId);
+        }
+
+        // --- (b) Create an upload link ---
+        const createForm = document.getElementById('create-form');
+        const createError = document.getElementById('create-error');
+        const createResult = document.getElementById('create-result');
+        const createSavedNotice = document.getElementById('create-saved-notice');
+        const savedKeySelect = document.getElementById('create-saved-key');
+        const submitButton = document.getElementById('create-submit');
+
+        function renderSavedKeyOptions() {
+            savedKeySelect.textContent = '';
+            if (savedKeys.length === 0) {
+                const empty = document.createElement('option');
+                empty.value = '';
+                empty.textContent = t('admin.create.savedKey.empty');
+                savedKeySelect.append(empty);
+                return;
+            }
+            for (const entry of savedKeys) {
+                const option = document.createElement('option');
+                option.value = entry.id;
+                option.textContent = `${entry.label || t('upload.defaultLabel')} (${entry.id})`;
+                savedKeySelect.append(option);
+            }
+        }
+
+        for (const radio of createForm.elements['key-source'])
+            radio.addEventListener('change', () => {
+                savedKeySelect.disabled = createForm.elements['key-source'].value !== 'reuse';
+            });
+
+        createForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            createError.hidden = true;
+            createResult.hidden = true;
+            createSavedNotice.hidden = true;
+
+            const keySource = createForm.elements['key-source'].value;
+            let publicKey;
+            let generatedPrivateKeyJwk = null;
+
+            if (keySource === 'reuse') {
+                const chosen = findSavedKey(savedKeySelect.value);
+                if (!chosen) {
+                    createError.textContent = t('admin.create.error.selectKey');
+                    createError.hidden = false;
+                    return;
+                }
+                publicKey = chosen.publicKey;
+            } else {
+                const pair = await generateKeyPair();
+                publicKey = pair.publicKey;
+                generatedPrivateKeyJwk = pair.privateKeyJwk;
+            }
+
+            const label = document.getElementById('create-label').value.trim();
+            submitButton.disabled = true;
+            const originalLabel = submitButton.textContent;
+            submitButton.textContent = t('admin.create.submitting');
+            let response;
+            try {
+                response = await adminFetch('/transfer-admin/links', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        label: label || null,
+                        ttlSeconds: Number(document.getElementById('create-ttl').value),
+                        maxBytes: Number(document.getElementById('create-max-bytes').value),
+                        publicKey
+                    })
+                });
+            } catch {
+                createError.textContent = t('admin.create.error');
+                createError.hidden = false;
+                return;
+            } finally {
+                submitButton.disabled = false;
+                submitButton.textContent = originalLabel;
+            }
+
+            if (!response.ok) {
+                createError.textContent = t('admin.create.error');
+                createError.hidden = false;
+                return;
+            }
+
+            const ticket = await response.json();
+            document.getElementById('result-url').textContent = ticket.url;
+            document.getElementById('result-id').textContent = ticket.id;
+            document.getElementById('result-expires').textContent = formatExpiry(ticket.expiresAt);
+            document.getElementById('result-max').textContent = formatSize(ticket.maxBytes);
+            createResult.hidden = false;
+
+            if (generatedPrivateKeyJwk) {
+                savedKeys.push({
+                    id: ticket.id,
+                    label: ticket.label || label || '',
+                    createdAt: new Date().toISOString(),
+                    publicKey,
+                    privateKeyJwk: generatedPrivateKeyJwk
+                });
+                persistSavedKeys(savedKeys);
+                renderSavedKeyOptions();
+                renderSavedKeys();
+                createSavedNotice.hidden = false;
+            }
+        });
+
+        document.getElementById('copy-link').addEventListener('click', async (event) => {
+            await navigator.clipboard.writeText(document.getElementById('result-url').textContent);
+            const button = event.currentTarget;
+            const original = button.textContent;
+            button.textContent = t('keys.copied');
+            setTimeout(() => { button.textContent = original; }, 1200);
+        });
+
+        // --- (c) Saved keys list ---
+        const keysEmpty = document.getElementById('keys-empty');
+        const keysTable = document.getElementById('keys-table');
+        const keysBody = document.getElementById('keys-body');
+
+        function renderSavedKeys() {
+            keysBody.textContent = '';
+            keysEmpty.hidden = savedKeys.length !== 0;
+            keysTable.hidden = savedKeys.length === 0;
+
+            for (const entry of savedKeys) {
+                const row = document.createElement('tr');
+
+                const labelCell = document.createElement('td');
+                labelCell.textContent = entry.label || t('upload.defaultLabel');
+                const idCell = document.createElement('td');
+                idCell.className = 'mono';
+                idCell.textContent = entry.id;
+                const createdCell = document.createElement('td');
+                createdCell.textContent = new Date(entry.createdAt).toLocaleString();
+
+                const actionsCell = document.createElement('td');
+                actionsCell.className = 'actions';
+                const downloadButton = document.createElement('button');
+                downloadButton.className = 'secondary';
+                downloadButton.textContent = t('admin.keys.download');
+                downloadButton.addEventListener('click', () => downloadKeyBackup(entry));
+                const forgetButton = document.createElement('button');
+                forgetButton.className = 'secondary';
+                forgetButton.textContent = t('admin.keys.forget');
+                forgetButton.addEventListener('click', () => forgetSavedKey(entry.id));
+                actionsCell.append(downloadButton, forgetButton);
+
+                row.append(labelCell, idCell, createdCell, actionsCell);
+                keysBody.append(row);
+            }
+        }
+
+        function downloadKeyBackup(entry) {
+            const blob = new Blob([JSON.stringify(entry, null, 2)], { type: 'application/json' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = `transfer-key-${entry.id}.jwk.json`;
+            link.click();
+            setTimeout(() => URL.revokeObjectURL(link.href), 5000);
+        }
+
+        function forgetSavedKey(id) {
+            if (!confirm(t('admin.keys.forgetConfirm')))
+                return;
+            savedKeys = savedKeys.filter((entry) => entry.id !== id);
+            persistSavedKeys(savedKeys);
+            renderSavedKeyOptions();
+            renderSavedKeys();
+            renderUploads();
+        }
+
+        renderSavedKeyOptions();
+        renderSavedKeys();
+
+        // --- (d) Received uploads ---
+        const uploadsError = document.getElementById('uploads-error');
+        const uploadsEmpty = document.getElementById('uploads-empty');
+        const uploadsTable = document.getElementById('uploads-table');
+        const uploadsBody = document.getElementById('uploads-body');
+        const uploadsFilter = document.getElementById('uploads-filter');
+        let uploads = [];
+
+        function parseKey(key) {
+            const parts = key.split('/');
+            return { ticketId: parts[1] || '', filename: parts.slice(2).join('/') || parts.at(-1) || key };
+        }
+
+        async function loadUploads() {
+            uploadsError.hidden = true;
+            const id = uploadsFilter.value.trim();
+            const path = id ? `/transfer-admin/uploads?id=${encodeURIComponent(id)}` : '/transfer-admin/uploads';
+            let response;
+            try {
+                response = await adminFetch(path);
+            } catch {
+                response = null;
+            }
+            if (!response || !response.ok) {
+                if (response?.status !== 401) {
+                    uploadsError.textContent = t('admin.uploads.loadError');
+                    uploadsError.hidden = false;
+                }
+                uploads = [];
+                renderUploads();
+                return;
+            }
+            uploads = await response.json();
+            renderUploads();
+        }
+
+        function renderUploads() {
+            uploadsBody.textContent = '';
+            uploadsEmpty.hidden = uploads.length !== 0;
+            uploadsTable.hidden = uploads.length === 0;
+
+            for (const item of uploads) {
+                const { ticketId, filename } = parseKey(item.key);
+                const row = document.createElement('tr');
+
+                const ticketCell = document.createElement('td');
+                ticketCell.className = 'mono';
+                ticketCell.textContent = ticketId;
+                const fileCell = document.createElement('td');
+                fileCell.textContent = filename;
+                const sizeCell = document.createElement('td');
+                sizeCell.textContent = formatSize(item.size);
+                const modifiedCell = document.createElement('td');
+                modifiedCell.textContent = new Date(item.lastModified).toLocaleString();
+
+                const actionsCell = document.createElement('td');
+                actionsCell.className = 'actions';
+                const key = findSavedKey(ticketId);
+                if (key) {
+                    const decryptButton = document.createElement('button');
+                    decryptButton.textContent = t('admin.uploads.decrypt');
+                    decryptButton.addEventListener('click', () => decryptAndSave(item, key, row, decryptButton));
+                    actionsCell.append(decryptButton);
+                } else {
+                    const downloadButton = document.createElement('button');
+                    downloadButton.className = 'secondary';
+                    downloadButton.textContent = t('admin.uploads.download');
+                    downloadButton.addEventListener('click', () => downloadCiphertext(item, downloadButton));
+                    const hint = document.createElement('div');
+                    hint.className = 'status';
+                    hint.textContent = t('admin.uploads.noKeyHint');
+                    actionsCell.append(downloadButton, hint);
+                }
+
+                row.append(ticketCell, fileCell, sizeCell, modifiedCell, actionsCell);
+                uploadsBody.append(row);
+            }
+        }
+
+        function encodedKeyPath(key) {
+            return key.split('/').map(encodeURIComponent).join('/');
+        }
+
+        async function downloadCiphertext(item, button) {
+            const original = button.textContent;
+            button.disabled = true;
+            try {
+                const response = await adminFetch(`/transfer-admin/uploads/${encodedKeyPath(item.key)}`);
+                if (!response.ok)
+                    throw new Error(t('admin.uploads.downloadError'));
+                const blob = await response.blob();
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = parseKey(item.key).filename;
+                link.click();
+                setTimeout(() => URL.revokeObjectURL(link.href), 5000);
+            } catch (failure) {
+                uploadsError.textContent = failure.message || t('admin.uploads.downloadError');
+                uploadsError.hidden = false;
+            } finally {
+                button.disabled = false;
+                button.textContent = original;
+            }
+        }
+
+        // Maps a decryption failure to a stable, translated message rather than a raw stack:
+        // crypto.js error codes are dictionary keys already; a failed AES-GCM auth tag surfaces
+        // as a native OperationError with no .code, which is always a wrong (or altered) key.
+        function decryptErrorMessage(failure) {
+            if (failure.code) return t(failure.code);
+            if (failure.name === 'OperationError') return t('decrypt.error.wrongKey');
+            return t('decrypt.error.generic');
+        }
+
+        async function decryptAndSave(item, key, row, button) {
+            const original = button.textContent;
+            button.disabled = true;
+            button.textContent = t('decrypt.status.working');
+
+            const status = document.createElement('div');
+            status.className = 'status';
+            const track = document.createElement('div');
+            track.className = 'track';
+            const bar = document.createElement('div');
+            bar.className = 'bar';
+            track.append(bar);
+            row.append(status, track);
+
+            try {
+                const response = await adminFetch(`/transfer-admin/uploads/${encodedKeyPath(item.key)}`);
+                if (!response.ok)
+                    throw new Error(t('admin.uploads.downloadError'));
+                const blob = await response.blob();
+                const opened = await decryptFile(blob, key.privateKeyJwk, {
+                    onProgress: (done, total) => {
+                        bar.style.width = `${total ? Math.round((done / total) * 100) : 100}%`;
+                    }
+                });
+                bar.style.width = '100%';
+                status.textContent = t('decrypt.status.done', { name: opened.name, size: formatSize(opened.size) });
+                status.style.color = 'var(--ok)';
+
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(opened.blob);
+                link.download = opened.name;
+                link.textContent = t('decrypt.save', { name: opened.name });
+                link.className = 'receipt';
+                link.style.display = 'block';
+                row.append(link);
+                link.click();
+                button.remove();
+            } catch (failure) {
+                status.textContent = decryptErrorMessage(failure);
+                status.style.color = 'var(--bad)';
+                track.hidden = true;
+                button.disabled = false;
+                button.textContent = original;
+            }
+        }
+
+        document.getElementById('uploads-refresh').addEventListener('click', loadUploads);
+        document.getElementById('uploads-filter-apply').addEventListener('click', loadUploads);
+        uploadsFilter.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                loadUploads();
+            }
+        });
+
+        // Uploads load on demand (Refresh/filter), not on page open - with no admin token
+        // entered yet, an automatic fetch here would immediately flash a false "rejected" error.
+    </script>
+</body>
+
+</html>
