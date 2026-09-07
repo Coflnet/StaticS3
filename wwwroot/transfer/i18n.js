@@ -290,11 +290,29 @@ export const DICTIONARIES = {
     }
 };
 
-export function resolveLanguage(tag) {
-    return String(tag || '').toLowerCase().startsWith('de') ? 'de' : 'en';
+export const SUPPORTED = ['de', 'en'];
+
+// Accepts a single tag or an ordered preference list, and returns the first supported
+// language. Order matters: ['en-US', 'de'] means the reader prefers English.
+export function resolveLanguage(tags) {
+    for (const tag of Array.isArray(tags) ? tags : [tags]) {
+        const base = String(tag || '').toLowerCase().split('-')[0];
+        if (SUPPORTED.includes(base)) return base;
+    }
+    return 'en';
 }
 
-export const language = resolveLanguage(globalThis.navigator?.language);
+// navigator.language alone is unreliable: in Firefox it mirrors the *content* language
+// (intl.accept_languages), so a German-UI browser configured to request en-US reads as
+// English. Prefer the full navigator.languages list, and let ?lang= force it outright.
+export function detectLanguage(navigatorLike = globalThis.navigator, search = globalThis.location?.search) {
+    const override = new URLSearchParams(search || '').get('lang');
+    if (override) return resolveLanguage(override);
+    const preferences = navigatorLike?.languages;
+    return resolveLanguage(preferences?.length ? [...preferences] : navigatorLike?.language);
+}
+
+export const language = detectLanguage();
 export const locale = language === 'de' ? 'de-DE' : 'en-US';
 
 export function t(key, params) {

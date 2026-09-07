@@ -46,6 +46,7 @@
     </main>
 
     <script type="module">
+        import { mobile, download } from './mobile.js';
         import { decryptFile } from '../transfer/crypto.js';
         import { applyTranslations, formatSize, t } from '../transfer/i18n.js';
 
@@ -116,14 +117,18 @@
                 });
                 view.status.style.color = 'var(--ok)';
 
-                const link = document.createElement('a');
-                link.href = URL.createObjectURL(opened.blob);
-                link.download = opened.name;
-                link.textContent = t('decrypt.save', { name: opened.name });
-                link.className = 'receipt';
-                link.style.display = 'block';
-                view.row.append(link);
-                link.click();
+                if (mobile) {
+                    await download(opened.blob, opened.name);
+                } else {
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(opened.blob);
+                    link.download = opened.name;
+                    link.textContent = t('decrypt.save', { name: opened.name });
+                    link.className = 'receipt';
+                    link.style.display = 'block';
+                    view.row.append(link);
+                    link.click();
+                }
             } catch (failure) {
                 view.status.textContent = failureMessage(failure);
                 view.status.style.color = 'var(--bad)';

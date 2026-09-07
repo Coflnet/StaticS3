@@ -113,3 +113,12 @@ node --test 'tests/*.test.mjs'
 
 It covers round-trips (single chunk, many chunks, empty), wrong key, tampered header, tampered ciphertext, truncation, trailing data, and frame reordering. It is not run by the container CI, which builds and runs the .NET tests only.
 
+
+The DevServer Android console can open this page through a bastion and native
+Kubernetes port forwarding. Its document-start `coflnetTransfer` bridge stores
+private transfer keys in the phone's biometric and passphrase-protected vault,
+awaits durable writes before offering a newly created upload link, and exports
+files through Android's save chooser. `transfer-admin/mobile.js` keeps ordinary
+browser storage and downloads compatible. The native bridge is supplied only by
+the app; this does not expose any admin routes publicly or change admin-token
+requirements. Deploy these admin assets together with the mobile update.

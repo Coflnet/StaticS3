@@ -70,3 +70,27 @@ test('every data-i18n key used in the pages exists in both dictionaries', async 
         }
     }
 });
+
+// navigator.language alone misreads a German browser that requests en-US content,
+// so detection must consider the whole ordered preference list and the ?lang= override.
+test('detectLanguage prefers the ordered navigator.languages list', async () => {
+    const { detectLanguage } = await import('../wwwroot/transfer/i18n.js');
+
+    assert.equal(detectLanguage({ languages: ['de-DE', 'de', 'en'] }, ''), 'de');
+    assert.equal(detectLanguage({ languages: ['en-US', 'de'] }, ''), 'en', 'first supported entry wins');
+    assert.equal(detectLanguage({ languages: ['fr-FR', 'de-AT'] }, ''), 'de', 'skips unsupported tags');
+    assert.equal(detectLanguage({ languages: ['fr'] }, ''), 'en', 'falls back to English');
+    // Falls back to navigator.language when the list is absent or empty.
+    assert.equal(detectLanguage({ languages: [], language: 'de-DE' }, ''), 'de');
+    assert.equal(detectLanguage({ language: 'de' }, ''), 'de');
+    assert.equal(detectLanguage({}, ''), 'en');
+    assert.equal(detectLanguage(undefined, ''), 'en');
+});
+
+test('?lang= overrides browser preferences', async () => {
+    const { detectLanguage } = await import('../wwwroot/transfer/i18n.js');
+
+    assert.equal(detectLanguage({ languages: ['en-US'] }, '?lang=de'), 'de');
+    assert.equal(detectLanguage({ languages: ['de-DE'] }, '?lang=en'), 'en');
+    assert.equal(detectLanguage({ languages: ['de-DE'] }, '?foo=1'), 'de', 'unrelated params ignored');
+});

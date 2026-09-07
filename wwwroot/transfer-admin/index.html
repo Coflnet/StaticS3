@@ -175,6 +175,7 @@
 
     <script type="module">
         import { decryptFile, generateKeyPair } from '../transfer/crypto.js';
+        import { mobile, readKeys, saveKeys, download, copy } from './mobile.js';
         import { applyTranslations, formatExpiry, formatSize, t } from '../transfer/i18n.js';
 
         applyTranslations();
@@ -185,24 +186,24 @@
         const tokenInput = document.getElementById('admin-token');
         const tokenError = document.getElementById('token-error');
 
-        function getToken() {
+        async function getToken() {
             try {
-                return sessionStorage.getItem(TOKEN_KEY) || '';
-            } catch {
-                return '';
-            }
+                const retained = sessionStorage.getItem(TOKEN_KEY);
+                if (retained !== null) return retained;
+            } catch { /* Native profiles can still supply their initial token. */ }
+            return mobile ? await mobile.readToken() : '';
         }
 
         function setToken(value) {
             try {
-                if (value) sessionStorage.setItem(TOKEN_KEY, value);
+                if (value || mobile) sessionStorage.setItem(TOKEN_KEY, value);
                 else sessionStorage.removeItem(TOKEN_KEY);
             } catch {
                 // Best effort only - adminFetch() still sends whatever is in the field.
             }
         }
 
-        tokenInput.value = getToken();
+        tokenInput.value = await getToken();
         tokenInput.addEventListener('input', () => setToken(tokenInput.value));
         document.getElementById('forget-token').addEventListener('click', () => {
             tokenInput.value = '';
@@ -220,34 +221,28 @@
             return response;
         }
 
-        // --- Saved keys: localStorage, because it must survive across tabs/reloads. A private
-        // window (or a user who has disabled storage) can throw on read or write, so every
-        // access goes through try/catch and the rest of the console keeps working regardless. ---
-        const KEYS_STORAGE_KEY = 'statics3.transfer.keys';
+        // --- Saved keys: the native production vault on Android, localStorage in ordinary browsers. ---
         const storageUnavailable = document.getElementById('storage-unavailable');
         let storageOk = true;
 
-        function loadSavedKeys() {
+        async function persistSavedKeys(keys) {
             try {
-                const raw = localStorage.getItem(KEYS_STORAGE_KEY);
-                const parsed = raw ? JSON.parse(raw) : [];
-                return Array.isArray(parsed) ? parsed : [];
-            } catch {
-                storageOk = false;
-                return [];
-            }
-        }
-
-        function persistSavedKeys(keys) {
-            try {
-                localStorage.setItem(KEYS_STORAGE_KEY, JSON.stringify(keys));
+                await saveKeys(keys);
+                storageOk = true;
             } catch {
                 storageOk = false;
             }
             storageUnavailable.hidden = storageOk;
+            return storageOk;
         }
 
-        let savedKeys = loadSavedKeys();
+        let savedKeys = [];
+        try { savedKeys = await readKeys(); }
+        catch {
+            storageOk = false;
+            // Never replace an unavailable native vault with an empty key list.
+            if (mobile) document.getElementById('create-submit').disabled = true;
+        }
         storageUnavailable.hidden = storageOk;
 
         function findSavedKey(ticketId) {
@@ -284,85 +279,97 @@
                 savedKeySelect.disabled = createForm.elements['key-source'].value !== 'reuse';
             });
 
+        let creating = false;
         createForm.addEventListener('submit', async (event) => {
             event.preventDefault();
-            createError.hidden = true;
-            createResult.hidden = true;
-            createSavedNotice.hidden = true;
+            if (creating) return;
+            creating = true;
+            const originalLabel = submitButton.textContent;
+            try {
+                createError.hidden = true;
+                createResult.hidden = true;
+                createSavedNotice.hidden = true;
 
-            const keySource = createForm.elements['key-source'].value;
-            let publicKey;
-            let generatedPrivateKeyJwk = null;
+                const keySource = createForm.elements['key-source'].value;
+                let publicKey;
+                let generatedPrivateKeyJwk = null;
 
-            if (keySource === 'reuse') {
-                const chosen = findSavedKey(savedKeySelect.value);
-                if (!chosen) {
-                    createError.textContent = t('admin.create.error.selectKey');
+                if (keySource === 'reuse') {
+                    const chosen = findSavedKey(savedKeySelect.value);
+                    if (!chosen) {
+                        createError.textContent = t('admin.create.error.selectKey');
+                        createError.hidden = false;
+                        return;
+                    }
+                    publicKey = chosen.publicKey;
+                } else {
+                    const pair = await generateKeyPair();
+                    publicKey = pair.publicKey;
+                    generatedPrivateKeyJwk = pair.privateKeyJwk;
+                }
+
+                const label = document.getElementById('create-label').value.trim();
+                submitButton.disabled = true;
+                submitButton.textContent = t('admin.create.submitting');
+                let response;
+                try {
+                    response = await adminFetch('/transfer-admin/links', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            label: label || null,
+                            ttlSeconds: Number(document.getElementById('create-ttl').value),
+                            maxBytes: Number(document.getElementById('create-max-bytes').value),
+                            publicKey
+                        })
+                    });
+                } catch {
+                    createError.textContent = t('admin.create.error');
                     createError.hidden = false;
                     return;
                 }
-                publicKey = chosen.publicKey;
-            } else {
-                const pair = await generateKeyPair();
-                publicKey = pair.publicKey;
-                generatedPrivateKeyJwk = pair.privateKeyJwk;
-            }
 
-            const label = document.getElementById('create-label').value.trim();
-            submitButton.disabled = true;
-            const originalLabel = submitButton.textContent;
-            submitButton.textContent = t('admin.create.submitting');
-            let response;
-            try {
-                response = await adminFetch('/transfer-admin/links', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        label: label || null,
-                        ttlSeconds: Number(document.getElementById('create-ttl').value),
-                        maxBytes: Number(document.getElementById('create-max-bytes').value),
-                        publicKey
-                    })
-                });
-            } catch {
-                createError.textContent = t('admin.create.error');
-                createError.hidden = false;
-                return;
+                if (!response.ok) {
+                    createError.textContent = t('admin.create.error');
+                    createError.hidden = false;
+                    return;
+                }
+
+                const ticket = await response.json();
+                document.getElementById('result-url').textContent = ticket.url;
+                document.getElementById('result-id').textContent = ticket.id;
+                document.getElementById('result-expires').textContent = formatExpiry(ticket.expiresAt);
+                document.getElementById('result-max').textContent = formatSize(ticket.maxBytes);
+
+                if (generatedPrivateKeyJwk) {
+                    savedKeys.push({
+                        id: ticket.id,
+                        label: ticket.label || label || '',
+                        createdAt: new Date().toISOString(),
+                        publicKey,
+                        privateKeyJwk: generatedPrivateKeyJwk
+                    });
+                    const persisted = await persistSavedKeys(savedKeys);
+                    renderSavedKeyOptions();
+                    renderSavedKeys();
+                    createSavedNotice.hidden = !persisted;
+                    if (mobile && !persisted) {
+                        // Retain the key for backup, but withhold a link until its key is durable.
+                        document.getElementById('result-url').textContent = '';
+                        return;
+                    }
+                }
+                if (mobile && !storageOk && !await persistSavedKeys(savedKeys)) return;
+                createResult.hidden = false;
             } finally {
+                creating = false;
                 submitButton.disabled = false;
                 submitButton.textContent = originalLabel;
-            }
-
-            if (!response.ok) {
-                createError.textContent = t('admin.create.error');
-                createError.hidden = false;
-                return;
-            }
-
-            const ticket = await response.json();
-            document.getElementById('result-url').textContent = ticket.url;
-            document.getElementById('result-id').textContent = ticket.id;
-            document.getElementById('result-expires').textContent = formatExpiry(ticket.expiresAt);
-            document.getElementById('result-max').textContent = formatSize(ticket.maxBytes);
-            createResult.hidden = false;
-
-            if (generatedPrivateKeyJwk) {
-                savedKeys.push({
-                    id: ticket.id,
-                    label: ticket.label || label || '',
-                    createdAt: new Date().toISOString(),
-                    publicKey,
-                    privateKeyJwk: generatedPrivateKeyJwk
-                });
-                persistSavedKeys(savedKeys);
-                renderSavedKeyOptions();
-                renderSavedKeys();
-                createSavedNotice.hidden = false;
             }
         });
 
         document.getElementById('copy-link').addEventListener('click', async (event) => {
-            await navigator.clipboard.writeText(document.getElementById('result-url').textContent);
+            await copy(document.getElementById('result-url').textContent);
             const button = event.currentTarget;
             const original = button.textContent;
             button.textContent = t('keys.copied');
@@ -407,20 +414,17 @@
             }
         }
 
-        function downloadKeyBackup(entry) {
+        async function downloadKeyBackup(entry) {
             const blob = new Blob([JSON.stringify(entry, null, 2)], { type: 'application/json' });
-            const link = document.createElement('a');
-            link.href = URL.createObjectURL(blob);
-            link.download = `transfer-key-${entry.id}.jwk.json`;
-            link.click();
-            setTimeout(() => URL.revokeObjectURL(link.href), 5000);
+            await download(blob, `transfer-key-${entry.id}.jwk.json`);
         }
 
-        function forgetSavedKey(id) {
+        async function forgetSavedKey(id) {
             if (!confirm(t('admin.keys.forgetConfirm')))
                 return;
-            savedKeys = savedKeys.filter((entry) => entry.id !== id);
-            persistSavedKeys(savedKeys);
+            const remaining = savedKeys.filter((entry) => entry.id !== id);
+            if (!await persistSavedKeys(remaining)) return;
+            savedKeys = remaining;
             renderSavedKeyOptions();
             renderSavedKeys();
             renderUploads();
@@ -520,11 +524,7 @@
                 if (!response.ok)
                     throw new Error(t('admin.uploads.downloadError'));
                 const blob = await response.blob();
-                const link = document.createElement('a');
-                link.href = URL.createObjectURL(blob);
-                link.download = parseKey(item.key).filename;
-                link.click();
-                setTimeout(() => URL.revokeObjectURL(link.href), 5000);
+                await download(blob, parseKey(item.key).filename);
             } catch (failure) {
                 uploadsError.textContent = failure.message || t('admin.uploads.downloadError');
                 uploadsError.hidden = false;
@@ -571,14 +571,18 @@
                 status.textContent = t('decrypt.status.done', { name: opened.name, size: formatSize(opened.size) });
                 status.style.color = 'var(--ok)';
 
-                const link = document.createElement('a');
-                link.href = URL.createObjectURL(opened.blob);
-                link.download = opened.name;
-                link.textContent = t('decrypt.save', { name: opened.name });
-                link.className = 'receipt';
-                link.style.display = 'block';
-                row.append(link);
-                link.click();
+                if (mobile) {
+                    await download(opened.blob, opened.name);
+                } else {
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(opened.blob);
+                    link.download = opened.name;
+                    link.textContent = t('decrypt.save', { name: opened.name });
+                    link.className = 'receipt';
+                    link.style.display = 'block';
+                    row.append(link);
+                    link.click();
+                }
                 button.remove();
             } catch (failure) {
                 status.textContent = decryptErrorMessage(failure);
