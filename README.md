@@ -1,6 +1,36 @@
 # StaticS3
 Serve static files from an S3 bucket
 
+## Uploading static objects
+
+`PUT /objects/<key>` stores the request body at `https://static.coflnet.com/<key>`. The endpoint is cluster-internal; reach it with a port-forward:
+
+```
+kubectl port-forward svc/static-s3 8000:8000 -n s3
+```
+
+The request's `Content-Type` is stored as the object's Content-Type. Supported types and limits:
+
+| Content-Type | Max size | Key extension |
+|---|---|---|
+| `image/png` | 5 MiB | any (not checked) |
+| `image/webp` | 5 MiB | `.webp` |
+| `image/avif` | 5 MiB | `.avif` |
+| `image/jpeg` | 5 MiB | `.jpg` or `.jpeg` |
+| `video/mp4` | 32 MiB | `.mp4` |
+| `video/webm` | 32 MiB | `.webm` |
+
+- Any other content type is rejected with `415`, an oversized body with `413`, and an invalid key (leading `/` or `..`) or a key whose extension does not match the content type with `400`. PNG keeps its original behaviour and is not extension-checked.
+- Responses are `201` (created), `200` (updated or unchanged). Uploading identical bytes again reports `unchanged` and writes nothing.
+
+```
+curl -X PUT http://localhost:8000/objects/skycofl/previews/flipper.mp4 \
+  -H "Content-Type: video/mp4" \
+  --data-binary @flipper.mp4
+```
+
+Objects are served with `Cache-Control: public, max-age=2592000, must-revalidate` (30 days). Browsers and the CDN may keep an old copy that long, so give a changed asset a **new key** (for example `flipper-v2.mp4`) instead of overwriting it.
+
 ## Secure file transfer
 
 **Threat model:** the server only ever sees ciphertext. The browser seals each file with a key derived from ECDH P-256 against the recipient's public key (HKDF-SHA256, then AES-256-GCM in 4 MiB frames), so the service stores an opaque blob and never sees the plaintext, the original filename, or a key that could open it. What the server does see is the ciphertext's size and when it arrived.
