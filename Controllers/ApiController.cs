@@ -23,7 +23,7 @@ public class ApiController : ControllerBase
     }
 
     [HttpPut]
-    [Consumes("image/png", "image/webp", "image/avif", "image/jpeg", "video/mp4", "video/webm")]
+    [Consumes("image/png", "image/webp", "image/avif", "image/jpeg", "image/gif", "video/mp4", "video/webm")]
     // Allows the largest type; the per-type limit is enforced in Put because the attribute is static.
     [RequestSizeLimit(32 * 1024 * 1024)]
     public async Task<IActionResult> Put(string key)

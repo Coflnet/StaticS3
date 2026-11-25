@@ -59,6 +59,7 @@ public class ApiControllerTests
     [TestCase("image/avif", "clips/a.avif")]
     [TestCase("image/jpeg", "clips/a.jpg")]
     [TestCase("image/jpeg", "clips/a.JPEG")]
+    [TestCase("image/gif", "sky/icons/TEST.gif")]
     [TestCase("video/mp4", "clips/a.mp4")]
     [TestCase("video/webm", "clips/a.webm")]
     public async Task StoresObjectWithItsOwnContentType(string contentType, string key)
@@ -84,7 +85,7 @@ public class ApiControllerTests
         store.Verify(value => value.PutAsync("clips/a.mp4", It.IsAny<Stream>(), "video/mp4", It.IsAny<CancellationToken>()), Times.Once);
     }
 
-    [TestCase("image/gif")]
+    [TestCase("image/svg+xml")]
     [TestCase("application/octet-stream")]
     [TestCase("")]
     public async Task UnsupportedContentTypeIsRejectedWith415(string contentType)
@@ -104,6 +105,7 @@ public class ApiControllerTests
     [TestCase("image/webp", "clips/a.mp4")]
     [TestCase("image/avif", "clips/a")]
     [TestCase("image/jpeg", "clips/a.png")]
+    [TestCase("image/gif", "sky/icons/TEST")]
     public async Task ExtensionMismatchForNewTypesIsRejectedWith400(string contentType, string key)
     {
         var store = new Mock<IObjectStore>();
@@ -130,6 +132,8 @@ public class ApiControllerTests
     [TestCase("image/png", "a", UploadPolicy.ImageMaxBytes, true)]
     [TestCase("image/png", "a", UploadPolicy.ImageMaxBytes + 1, false)]
     [TestCase("image/webp", "a.webp", UploadPolicy.ImageMaxBytes + 1, false)]
+    [TestCase("image/gif", "a.gif", UploadPolicy.ImageMaxBytes, true)]
+    [TestCase("image/gif", "a.gif", UploadPolicy.ImageMaxBytes + 1, false)]
     [TestCase("video/mp4", "a.mp4", UploadPolicy.VideoMaxBytes, true)]
     [TestCase("video/mp4", "a.mp4", UploadPolicy.ImageMaxBytes + 1, true)]
     [TestCase("video/webm", "a.webm", UploadPolicy.VideoMaxBytes + 1, false)]

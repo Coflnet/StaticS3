@@ -23,6 +23,7 @@ public static class UploadPolicy
         ["image/webp"] = new(ImageMaxBytes, [".webp"]),
         ["image/avif"] = new(ImageMaxBytes, [".avif"]),
         ["image/jpeg"] = new(ImageMaxBytes, [".jpg", ".jpeg"]),
+        ["image/gif"] = new(ImageMaxBytes, [".gif"]),
         ["video/mp4"] = new(VideoMaxBytes, [".mp4"]),
         ["video/webm"] = new(VideoMaxBytes, [".webm"]),
     };

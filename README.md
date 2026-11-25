@@ -17,6 +17,7 @@ The request's `Content-Type` is stored as the object's Content-Type. Supported t
 | `image/webp` | 5 MiB | `.webp` |
 | `image/avif` | 5 MiB | `.avif` |
 | `image/jpeg` | 5 MiB | `.jpg` or `.jpeg` |
+| `image/gif` | 5 MiB | `.gif` |
 | `video/mp4` | 32 MiB | `.mp4` |
 | `video/webm` | 32 MiB | `.webm` |
 
